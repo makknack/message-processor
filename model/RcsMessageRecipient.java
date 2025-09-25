@@ -1,0 +1,9 @@
+// ...existing code...
+import com.vladmihalcea.hibernate.type.json.JsonType;
+import org.hibernate.annotations.Type;
+// ...existing code...
+    @Type(type = "json")
+    @Column(name = "personalized_content", columnDefinition = "json")
+    private Map<String, Object> personalizedContent;
+// ...existing code...
+

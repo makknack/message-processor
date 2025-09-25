@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: messaging-processor
+  datasource:
+    url: jdbc:postgresql://13.204.28.222:5432/messagefusion_db
+    username: postgres
+    password: B3Fu4Ao5BJ8Bb1D
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ["loggers"]
+  metrics:
+    kafka:
+      enabled: true
+    export:
+      prometheus:
+        enabled: true
+

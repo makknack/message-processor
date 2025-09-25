@@ -1,0 +1,16 @@
+kafka:
+  bootstrap-servers: 13.204.28.222:9092
+  enabled: true
+  topics:
+    rcs-submission: rcs-submission-events-dev
+    rcs-response: rcs-response-events-dev
+  consumers:
+    rcs-submission:
+      enabled: true
+      id: rcs-submission-listener-id-dev
+      group-id: rcs-submission-group-id-dev
+    rcs-response:
+      enabled: true
+      id: rcs-response-listener-id-dev
+      group-id: rcs-response-group-id-dev
+
