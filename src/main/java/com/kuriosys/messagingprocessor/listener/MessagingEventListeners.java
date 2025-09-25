@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kuriosys.messagingprocessor.enums.EventType;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
+import com.kuriosys.messagingprocessor.model.RcsResponseEvent;
 import com.kuriosys.messagingprocessor.service.RcsSubmissionEventHandler;
 import lombok.RequiredArgsConstructor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -31,26 +32,42 @@ public class MessagingEventListeners {
             containerFactory = "kafkaListenerContainerFactory")
     public void rcsWebHookEvents(List<ConsumerRecord<String,String>> records, Acknowledgment acknowledgment){
         log.debug("RCS response event received, number of records: {}", records.size());
-        for(ConsumerRecord<String,String> record : records){
-            log.debug("RCS response event received: {}", record.value());
+        for(ConsumerRecord<String,String> record : records) {
+            log.info("Processing RCS Webhook Event: {}", record.offset());
             try {
+                RcsResponseEvent rcsResponseEvent = objectMapper.readValue(record.value(), RcsResponseEvent.class);
                 JsonNode root = objectMapper.readTree(record.value());
-                if (root.has("reachableUsers")) {
-                    JsonNode reachableUsersNode = root.get("reachableUsers");
-                    if (reachableUsersNode != null && reachableUsersNode.isArray()) {
-                        for (JsonNode userNode : reachableUsersNode) {
-                            String user = userNode.asText();
-                            log.info("Reachable user: {}", user);
-                            // TODO: Add your business logic here (e.g., update DB, metrics, etc.)
-                        }
-                    }
+                String eventTypeStr = root.get("eventType").asText();
+                EventType eventType = EventType.fromValue(rcsResponseEvent.getEventType());
+                switch (eventType) {
+                    case RCS_REQUEST_SEND_EVENT:
+                        // Handle request send event
+                        log.debug("RCS Request Send Event received: {}", record.value());
+                        break;
+                    case EventType.RCS_SEND_EVENT:
+                        // Handle delivery report
+                        log.debug("RCS Delivery Report received: {}", record.value());
+                        break;
+                    case RCS_DELIVERED_EVENT:
+                        // Handle read report
+                        log.debug("RCS Read Report received: {}", record.value());
+                        break;
+                    case RCS_READ_EVENT:
+                        // Handle user response
+                        log.debug("RCS User Response received: {}", record.value());
+                        break;
+                    case null:
+                        log.warn("Event type is null in the event: {}", record.value());
+                        break;
+                    default:
+                        log.warn("Unknown event type: {}", eventType);
                 }
-                // TODO: Add parsing/handling for other event types as needed
             } catch (Exception e) {
-                log.error("Error parsing RCS webhook event: {}", record.value(), e);
+                log.error("Exception while processing rcs response events ", e);
+                // TODO : Decide for which exceptions it should be rolled back  and for which it should not
             }
-            acknowledgment.acknowledge();
         }
+        acknowledgment.acknowledge();
     }
 
     @KafkaListener(id="${kafka.consumers.rcs-submission.id}",
