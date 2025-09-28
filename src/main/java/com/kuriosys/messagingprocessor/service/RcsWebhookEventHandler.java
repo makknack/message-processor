@@ -1,12 +1,9 @@
 package com.kuriosys.messagingprocessor.service;
 
-import org.springframework.stereotype.Service;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.kuriosys.messagingprocessor.exception.SkipRecordException;
 
-@Service
-public class RcsWebhookEventHandler{
-
-    public void handle(String webhookEvent){
-
-    }
-
+public interface RcsWebhookEventHandler {
+    void handle(JsonNode jsonNode) throws JsonProcessingException, SkipRecordException;
 }

@@ -5,6 +5,8 @@ import com.kuriosys.messagingprocessor.enums.CardWidth;
 import com.kuriosys.messagingprocessor.enums.RcsContentType;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;
 import com.kuriosys.messagingprocessor.model.*;
+import com.kuriosys.messagingprocessor.service.PayloadCreator;
+
 import java.util.List;
 import java.util.Map;
 

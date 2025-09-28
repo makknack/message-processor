@@ -9,7 +9,6 @@ import com.kuriosys.messagingprocessor.repository.*;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;
 import com.kuriosys.messagingprocessor.service.vendor.JioPayloadCreator;
-import com.kuriosys.messagingprocessor.service.vendor.PayloadCreator;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

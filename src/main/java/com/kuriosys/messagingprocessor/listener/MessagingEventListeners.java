@@ -1,11 +1,19 @@
 package com.kuriosys.messagingprocessor.listener;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kuriosys.messagingprocessor.enums.EventType;
+import com.kuriosys.messagingprocessor.enums.RcsEventLogStatus;
+import com.kuriosys.messagingprocessor.enums.RcsWebhookEventSource;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
-import com.kuriosys.messagingprocessor.model.RcsResponseEvent;
+import com.kuriosys.messagingprocessor.exception.SkipRecordException;
+import com.kuriosys.messagingprocessor.model.RcsEventLog;
+import com.kuriosys.messagingprocessor.model.jio.MessageRequestSendEvent;
+import com.kuriosys.messagingprocessor.repository.RcsEventLogRepository;
 import com.kuriosys.messagingprocessor.service.RcsSubmissionEventHandler;
+import com.kuriosys.messagingprocessor.service.RcsWebhookEventHandler;
+import com.kuriosys.messagingprocessor.service.vendor.JioRcsWebhookEventHandler;
 import lombok.RequiredArgsConstructor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
@@ -23,6 +31,8 @@ public class MessagingEventListeners {
 
     private final RcsSubmissionEventHandler rcsSubmissionEventHandler;
     private final ObjectMapper objectMapper;
+    private final JioRcsWebhookEventHandler jioRcsWebhookEventHandler;
+    private final RcsEventLogRepository rcsEventLogRepository;
 
 
     @KafkaListener(id="${kafka.consumers.rcs-response.id}",
@@ -32,42 +42,50 @@ public class MessagingEventListeners {
             containerFactory = "kafkaListenerContainerFactory")
     public void rcsWebHookEvents(List<ConsumerRecord<String,String>> records, Acknowledgment acknowledgment){
         log.debug("RCS response event received, number of records: {}", records.size());
+        RcsWebhookEventHandler rcsWebhookEventHandler = null;
         for(ConsumerRecord<String,String> record : records) {
             log.info("Processing RCS Webhook Event: {}", record.offset());
+            JsonNode jsonNode = null;
+            String eventId = null;
+            String source = null;
+            String eventType = null;
             try {
-                RcsResponseEvent rcsResponseEvent = objectMapper.readValue(record.value(), RcsResponseEvent.class);
-                JsonNode root = objectMapper.readTree(record.value());
-                String eventTypeStr = root.get("eventType").asText();
-                EventType eventType = EventType.fromValue(rcsResponseEvent.getEventType());
-                switch (eventType) {
-                    case RCS_REQUEST_SEND_EVENT:
-                        // Handle request send event
-                        log.debug("RCS Request Send Event received: {}", record.value());
-                        break;
-                    case EventType.RCS_SEND_EVENT:
-                        // Handle delivery report
-                        log.debug("RCS Delivery Report received: {}", record.value());
-                        break;
-                    case RCS_DELIVERED_EVENT:
-                        // Handle read report
-                        log.debug("RCS Read Report received: {}", record.value());
-                        break;
-                    case RCS_READ_EVENT:
-                        // Handle user response
-                        log.debug("RCS User Response received: {}", record.value());
-                        break;
-                    case null:
-                        log.warn("Event type is null in the event: {}", record.value());
-                        break;
-                    default:
-                        log.warn("Unknown event type: {}", eventType);
+                jsonNode = objectMapper.readTree(record.value());
+                source = jsonNode.get("source").asText();
+                eventId = jsonNode.get("eventId").asText();
+                eventType = jsonNode.get("eventType").asText();
+                RcsWebhookEventSource rcsResponseEventSource =  RcsWebhookEventSource.valueOf(source);
+                if(RcsWebhookEventSource.JIO == rcsResponseEventSource){
+                    rcsWebhookEventHandler = jioRcsWebhookEventHandler;
                 }
-            } catch (Exception e) {
-                log.error("Exception while processing rcs response events ", e);
-                // TODO : Decide for which exceptions it should be rolled back  and for which it should not
+                else {
+                    log.warn("No Implementation for this source {}", source);
+                }
+                rcsWebhookEventHandler.handle(jsonNode);
+            }
+            catch(JsonProcessingException e){
+                log.warn("Exception while processing rcs response events Exception={}, Topic={}, Partition={}, Offset={}, Event={}", e.getMessage(), record.topic(),record.partition(),record.offset(),record.value());
+            }
+            catch(SkipRecordException e){
+                logRcsEvent(eventId, source, eventType, record.value(), RcsEventLogStatus.NO_ACTION_NEEDED,"Skipping record:");
+            }
+            catch (Exception e) {
+                log.error("Exception while processing rcs response events " +record.value(), e);
+                logRcsEvent(eventId, source, eventType, record.value(), RcsEventLogStatus.NEED_PROCESSING,e.getMessage());
             }
         }
         acknowledgment.acknowledge();
+    }
+
+    private void logRcsEvent(String eventId, String source, String eventType, String payload, RcsEventLogStatus rcsEventLogStatus, String comment) {
+        RcsEventLog rcsEventLog = new RcsEventLog();
+        rcsEventLog.setSource(source);
+        rcsEventLog.setEventId(eventId);
+        rcsEventLog.setPayload(payload);
+        rcsEventLog.setEventType(eventType);
+        rcsEventLog.setStatus(rcsEventLogStatus);
+        rcsEventLog.setComment(comment);
+        rcsEventLogRepository.save(rcsEventLog);
     }
 
     @KafkaListener(id="${kafka.consumers.rcs-submission.id}",

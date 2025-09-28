@@ -1,4 +1,4 @@
-package com.kuriosys.messagingprocessor.service.vendor;
+package com.kuriosys.messagingprocessor.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;

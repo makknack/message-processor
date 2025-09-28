@@ -9,7 +9,7 @@ import java.time.OffsetDateTime;
 @Getter
 @Setter
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class StatusEntity {
+public class Entity {
     private String eventId;
     private String eventType;
     private String messageId;
@@ -17,4 +17,8 @@ public class StatusEntity {
     private OffsetDateTime sendTime;
     private String senderPhoneNumber;
     private Error error;
+    private String location;
+    private SuggestionResponse suggestionResponse;
+    private String text;
+    private String userFile;
 }
