@@ -17,6 +17,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
@@ -127,13 +128,13 @@ public class RcsSubmissionEventHandler {
                             log.debug("personalizedDetailsMap  {}", personalizedDetailsMap);
                             Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, personalizedDetailsMap);
                             String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                             Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
                             Map<String, String> additionalHeaders = payloadCreator.getHeaders();
                             sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient));
                             validRecipientsCount++;
                       } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                             inValidRcsMessageRecipients.add(rcsMessageRecipient);
                             invalidRecipientsCount++;
                     }
@@ -163,11 +164,11 @@ public class RcsSubmissionEventHandler {
                         String validRecipient =  validateNumber(recipient);
                         if (validRecipient != null) {
                             validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
                             validRcsMessageRecipients.add(rcsMessageRecipient);
                             validRecipientsCount++;
                         } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                             inValidRcsMessageRecipients.add(rcsMessageRecipient);
                             invalidRecipientsCount++;
                         }
@@ -197,9 +198,7 @@ public class RcsSubmissionEventHandler {
             if (rcsMessageRequest != null) {
                 rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
                 rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                List<String> comments = rcsMessageRequest.getComments() != null ? rcsMessageRequest.getComments() : new ArrayList<>();
-                comments.add(e.getMessage());
-                rcsMessageRequest.setComments(comments);
+                rcsMessageRequest.setComments(e.getMessage());
                 rcsMessageRequestRepository.save(rcsMessageRequest);
             }
         }
@@ -237,13 +236,13 @@ public class RcsSubmissionEventHandler {
                 if (validRecipient!= null) {
                     Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, nextRecordMap);
                     String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
-                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
+                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                     Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
                     Map<String, String> headers = payloadCreator.getHeaders();
                     sendAndInsert(url, requestBody, headers, List.of(rcsMessageRecipient));
                     validRecipientsCount++;
                 } else {
-                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                     inValidRcsMessageRecipients.add(rcsMessageRecipient);
                     invalidRecipientsCount++;
                 }
@@ -268,9 +267,7 @@ public class RcsSubmissionEventHandler {
             log.error("Processing exception occurred", e);
             rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
             rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            List<String> comments = rcsMessageRequest.getComments() != null ? rcsMessageRequest.getComments() : new ArrayList<>();
-            comments.add(e.getMessage());
-            rcsMessageRequest.setComments(comments);
+            rcsMessageRequest.setComments(e.getMessage());
             rcsMessageRequestRepository.save(rcsMessageRequest);
         }
     }
@@ -330,10 +327,10 @@ public class RcsSubmissionEventHandler {
                         String validRecipient =  validateNumber(recipient);
                         if (validRecipient != null) {
                             validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
                             validRcsMessageRecipients.add(rcsMessageRecipient);
                         } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                             inValidRcsMessageRecipients.add(rcsMessageRecipient);
                         }
                     }
@@ -365,9 +362,7 @@ public class RcsSubmissionEventHandler {
             log.error("Processing exception occurred", e);
             rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
             rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            List<String> comments = rcsMessageRequest.getComments() != null ? rcsMessageRequest.getComments() : new ArrayList<>();
-            comments.add(e.getMessage());
-            rcsMessageRequest.setComments(comments);
+            rcsMessageRequest.setComments(e.getMessage());
             rcsMessageRequestRepository.save(rcsMessageRequest);
         }
     }
@@ -430,12 +425,12 @@ public class RcsSubmissionEventHandler {
                         Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, nextRecordMap);
                         String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
                         log.debug("personalizedContentObject  {}, {}", personalizedContentObject, nextRecordMap);
-                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
+                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                         Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
                         sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient));
                         validRecipientsCount++;
                     } else {
-                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                         inValidRcsMessageRecipients.add(rcsMessageRecipient);
                         invalidRecipientsCount++;
                     }
@@ -464,9 +459,7 @@ public class RcsSubmissionEventHandler {
             log.error("Processing exception occurred", e);
             rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
             rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            List<String> comments = rcsMessageRequest.getComments() != null ? rcsMessageRequest.getComments() : new ArrayList<>();
-            comments.add(e.getMessage());
-            rcsMessageRequest.setComments(comments);
+            rcsMessageRequest.setComments(e.getMessage());
             rcsMessageRequestRepository.save(rcsMessageRequest);
         }
 
@@ -519,10 +512,10 @@ public class RcsSubmissionEventHandler {
                         String validRecipient =  validateNumber(recipient);
                         if (validRecipient != null) {
                             validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
                             validRcsMessageRecipients.add(rcsMessageRecipient);
                         } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(), rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                             inValidRcsMessageRecipients.add(rcsMessageRecipient);
                         }
                     }
@@ -564,21 +557,20 @@ public class RcsSubmissionEventHandler {
             log.error("Processing exception occurred", e);
             rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
             rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            List<String> comments = rcsMessageRequest.getComments() != null ? rcsMessageRequest.getComments() : new ArrayList<>();
-            comments.add(e.getMessage());
-            rcsMessageRequest.setComments(comments);
+            rcsMessageRequest.setComments(e.getMessage());
             rcsMessageRequestRepository.save(rcsMessageRequest);
         }
     }
 
-    private static RcsMessageRecipient populateRcsMessageRecipient(String messageRequestId, String recipient, RcsMessageRecipientStatus status, String personalizedContent, String comment) {
+    private static RcsMessageRecipient populateRcsMessageRecipient(BigInteger userId, String messageRequestId, String recipient, RcsMessageRecipientStatus status, String personalizedContent, String comment) {
         RcsMessageRecipient rcsMessageRecipient = new RcsMessageRecipient();
         rcsMessageRecipient.setMessageRequestId(messageRequestId);
         rcsMessageRecipient.setRecipient(recipient);
         rcsMessageRecipient.setStatus(status);
+        rcsMessageRecipient.setUserId(userId);
         rcsMessageRecipient.setPersonalizedContent(personalizedContent);
         if (comment != null) {
-            rcsMessageRecipient.setComments(List.of(comment));
+            rcsMessageRecipient.setComments(comment);
         }
         return rcsMessageRecipient;
     }

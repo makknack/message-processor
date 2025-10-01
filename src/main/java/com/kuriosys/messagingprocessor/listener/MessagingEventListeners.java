@@ -84,7 +84,7 @@ public class MessagingEventListeners {
         rcsEventLog.setPayload(payload);
         rcsEventLog.setEventType(eventType);
         rcsEventLog.setStatus(rcsEventLogStatus);
-        rcsEventLog.setComment(comment);
+        rcsEventLog.setComments(comment);
         rcsEventLogRepository.save(rcsEventLog);
     }
 
@@ -95,11 +95,16 @@ public class MessagingEventListeners {
             containerFactory = "kafkaListenerContainerFactory")
     public void handleRcsSubmissionEvents(List<ConsumerRecord<String, String>> records,
                                           Acknowledgment acknowledgment) {
-        try {
             for(ConsumerRecord<String, String> record : records) {
+                String source = null;
+                String eventId = null;
+                String eventTypeStr = null;
+                try {
                 log.info("Processing RCS File Upload Event: {}", record.offset());
-                JsonNode root = objectMapper.readTree(record.value());
-                String eventTypeStr = root.get("eventType").asText();
+                JsonNode jsonNode = objectMapper.readTree(record.value());
+                source = jsonNode.get("source").asText();
+                eventId = jsonNode.get("eventId").asText();
+                eventTypeStr = jsonNode.get("eventType").asText();
                 EventType eventType = EventType.fromValue(eventTypeStr);
                 RcsSubmissionEvent rcsSubmissionEvent;
                 switch (eventType) {
@@ -124,13 +129,15 @@ public class MessagingEventListeners {
                 }
                 acknowledgment.acknowledge();
                 log.debug("RCS File Upload Event processed: {} {}", eventType,  record.offset());
+                }
+                catch (Exception e){
+                    log.error("Exception while processing rcs submission events ", e);
+                    logRcsEvent(eventId, source, eventTypeStr, record.value(), RcsEventLogStatus.NEED_PROCESSING,e.getMessage());
+                    // TODO : Decide for which exceptions it should be rolled back  and for which it should not
+                }
+                acknowledgment.acknowledge();
             }
-        }
-        catch (Exception e){
-            log.error("Exception while processing rcs submission events ", e);
-            // TODO : Decide for which exceptions it should be rolled back  and for which it should not
-            acknowledgment.acknowledge();
-        }
+
 
     }
 }

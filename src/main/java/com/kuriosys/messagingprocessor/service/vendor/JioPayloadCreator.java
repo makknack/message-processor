@@ -91,7 +91,7 @@ public class JioPayloadCreator implements PayloadCreator {
                         }
                         Map<String, Object> replyMap = new java.util.HashMap<>();
                         replyMap.put("plainText", suggestion.getDisplayText());
-                        replyMap.put("postBack", Map.of("data", suggestion.getPostbackData()));
+                        replyMap.put("postBack", Map.of("data", enrichPostBackData(suggestion.getPostbackData())));
                         suggestionMap.put("reply", replyMap);
                         break;
                     }
@@ -101,7 +101,7 @@ public class JioPayloadCreator implements PayloadCreator {
                         }
                         Map<String, Object> actionMap = new java.util.HashMap<>();
                         actionMap.put("plainText", suggestion.getDisplayText());
-                        actionMap.put("postBack", Map.of("data", suggestion.getPostbackData()));
+                        actionMap.put("postBack", Map.of("data", enrichPostBackData(suggestion.getPostbackData())));
                         actionMap.put("openUrl", Map.of("url", suggestion.getActionUrl()));
                         suggestionMap.put("action", actionMap);
                         break;
@@ -112,7 +112,7 @@ public class JioPayloadCreator implements PayloadCreator {
                         }
                         Map<String, Object> actionMap = new java.util.HashMap<>();
                         actionMap.put("plainText", suggestion.getDisplayText());
-                        actionMap.put("postBack", Map.of("data", suggestion.getPostbackData()));
+                        actionMap.put("postBack", Map.of("data", enrichPostBackData(suggestion.getPostbackData())));
                         actionMap.put("dialerAction", Map.of("phoneNumber", suggestion.getPhoneNumber()));
                         suggestionMap.put("action", actionMap);
                         break;
@@ -123,7 +123,7 @@ public class JioPayloadCreator implements PayloadCreator {
                         }
                         Map<String, Object> actionMap = new java.util.HashMap<>();
                         actionMap.put("plainText", suggestion.getDisplayText());
-                        actionMap.put("postBack", Map.of("data", suggestion.getPostbackData()));
+                        actionMap.put("postBack", Map.of("data", enrichPostBackData(suggestion.getPostbackData())));
                         actionMap.put("showLocation", Map.of(
                             "coordinates", Map.of(
                                 "latitude", suggestion.getLocationLatitude(),
@@ -140,7 +140,7 @@ public class JioPayloadCreator implements PayloadCreator {
                         }
                         Map<String, Object> actionMap = new java.util.HashMap<>();
                         actionMap.put("plainText", suggestion.getDisplayText());
-                        actionMap.put("postBack", Map.of("data", suggestion.getPostbackData()));
+                        actionMap.put("postBack", Map.of("data", enrichPostBackData(suggestion.getPostbackData())));
                         actionMap.put("createCalendarEvent", Map.of(
                                 "startTime", suggestion.getEventStartTime(),
                                 "endTime", suggestion.getEventEndTime(),
@@ -213,6 +213,10 @@ public class JioPayloadCreator implements PayloadCreator {
         else{
             throw new ProcessingException("Unsupported card width: " + width);
         }
+    }
+
+    private String enrichPostBackData(String postBackData) {
+        return postBackData + "{{$50}}"; // In JIO payload {{$50}} must be appended to postBack data.
     }
 
     public Map<String, String> getHeaders() {

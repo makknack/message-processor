@@ -39,8 +39,8 @@ public class RcsEventLog {
     @Column(name = "status", length = 20, nullable = false)
     private RcsEventLogStatus status = RcsEventLogStatus.NO_ACTION_NEEDED;
 
-    @Column(name = "comment")
-    private String comment;
+    @Column(name = "comments")
+    private String comments;
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt = OffsetDateTime.now();

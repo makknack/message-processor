@@ -1,15 +1,15 @@
 kafka:
  bootstrap-servers: localhost:9092
- enable: true
+ enabled: true
  topics:
   rcs-submission: rcs-submission-events-dev
   rcs-response: rcs-response-events-dev
  consumers:
   rcs-submission:
-   enable: true
+   enabled: true
    id: rcs-submission-listener-id-dev
    group-id: rcs-submission-group-id-dev
   rcs-response:
-   enable: true
+   enabled: true
    id: rcs-response-listener-id-dev
    group-id: rcs-response-group-id-dev

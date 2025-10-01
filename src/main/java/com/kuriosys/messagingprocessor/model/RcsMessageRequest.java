@@ -37,8 +37,8 @@ public class RcsMessageRequest {
     @Column(name = "content", nullable = false, columnDefinition = "json")
     private String content;   // Store raw JSON string
 
-    @Column(name = "comments", columnDefinition = "json")
-    private List<String> comments;
+    @Column(name = "comments")
+    private String comments;
 
     @Column(name = "total_recipients", nullable = false)
     private Long totalRecipients;

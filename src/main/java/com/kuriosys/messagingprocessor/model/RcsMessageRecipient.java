@@ -5,9 +5,8 @@ import jakarta.persistence.*;
 import lombok.Data;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
-
+import java.math.BigInteger;
 import java.time.OffsetDateTime;
-import java.util.List;
 
 @Entity
 @Table(name = "rcs_message_recipient")
@@ -21,6 +20,9 @@ public class RcsMessageRecipient {
 
     @Column(name = "message_request_id", length = 26, nullable = false)
     private String messageRequestId;
+
+    @Column(name = "user_id", nullable = false)
+    private BigInteger userId;
 
     @Column(name = "recipient", nullable = false)
     private String recipient;
@@ -39,9 +41,8 @@ public class RcsMessageRecipient {
     @Column(name = "response", columnDefinition = "text")
     private String response;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "comments", columnDefinition = "json")
-    private List<String> comments;
+    @Column(name = "comments")
+    private String comments;
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt = OffsetDateTime.now();

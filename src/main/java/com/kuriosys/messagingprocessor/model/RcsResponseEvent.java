@@ -6,7 +6,6 @@ import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.annotations.Type;
 import org.hibernate.type.SqlTypes;
 
 import java.time.OffsetDateTime;
@@ -34,11 +33,11 @@ public class RcsResponseEvent {
     @Column(name = "event_id", unique = true, nullable = false, length = 36)
     private String eventId;
 
-    @Column(name = "sender", length = 20)
-    private String sender;
+    @Column(name = "sender_phone_number", length = 20)
+    private String senderPhoneNumber;
 
-    @Column(name = "recipient", length = 20)
-    private String recipient;
+    @Column(name = "user_phone_number", length = 20)
+    private String userPhoneNumber;
 
     @Column(name = "event_type", length = 50)
     private String eventType;
@@ -51,8 +50,8 @@ public class RcsResponseEvent {
     @Column(name = "payload", columnDefinition = "json")
     private JsonNode payload;
 
-    @Column(name = "event_sent_at")
-    private OffsetDateTime eventSentAt;
+    @Column(name = "source_event_time")
+    private OffsetDateTime sourceEventTime;
 
     @Column(name = "event_received_at", nullable = false)
     private OffsetDateTime eventReceivedAt = OffsetDateTime.now(java.time.ZoneOffset.UTC);

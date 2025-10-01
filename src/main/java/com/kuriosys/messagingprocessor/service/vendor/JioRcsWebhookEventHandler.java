@@ -4,11 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kuriosys.messagingprocessor.exception.SkipRecordException;
-import com.kuriosys.messagingprocessor.model.RcsEventLog;
 import com.kuriosys.messagingprocessor.model.RcsResponseEvent;
 import com.kuriosys.messagingprocessor.model.jio.Error;
 import com.kuriosys.messagingprocessor.model.jio.JioWebhookEvent;
-import com.kuriosys.messagingprocessor.model.jio.MessageRequestSendEvent;
 import com.kuriosys.messagingprocessor.repository.RcsEventLogRepository;
 import com.kuriosys.messagingprocessor.repository.RcsResponseEventRepository;
 import com.kuriosys.messagingprocessor.service.RcsWebhookEventHandler;
@@ -51,11 +49,11 @@ public class JioRcsWebhookEventHandler implements RcsWebhookEventHandler {
                     Error error = webhookEvent.getEntity().getError();
                     RcsResponseEvent rcsResponseEvent  = new RcsResponseEvent();
                     rcsResponseEvent.setAgentId(agentId);
-                    rcsResponseEvent.setRecipient(recipient);
+                    rcsResponseEvent.setUserPhoneNumber(recipient);
                     rcsResponseEvent.setReferenceId(referenceId);
                     rcsResponseEvent.setMessageRequestId(messageRequestId);
                     rcsResponseEvent.setEventId(eventId);
-                    rcsResponseEvent.setEventSentAt(sendTime);
+                    rcsResponseEvent.setSourceEventTime(sendTime);
                     rcsResponseEvent.setEventType(EventTypeConverter.getEvent(externalEventType).name());
                     rcsResponseEvent.setPayload(payloadNode);
                     if(error!=null){
