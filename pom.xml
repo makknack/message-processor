@@ -109,7 +109,7 @@
 	</dependencies>
 
 	<build>
-		<finalName>message-processor</finalName>
+		<finalName>message-processing-services</finalName>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>

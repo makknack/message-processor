@@ -40,7 +40,7 @@ public class JioRcsWebhookEventHandler implements RcsWebhookEventHandler {
             JsonNode entityNode =  jsonNode.get("payload").get("entity");
             if(entityNode!=null && !entityNode.isEmpty()) {
                     JioWebhookEvent webhookEvent = objectMapper.treeToValue(payloadNode, JioWebhookEvent.class);
-                    String recipient =  webhookEvent.getUserPhoneNumber();
+                    String recipient =  stripLeadingPlus(webhookEvent.getUserPhoneNumber());
                     String externalEventType = webhookEvent.getEntity().getEventType();
                     String agentId = webhookEvent.getAgentId();
                     String referenceId= webhookEvent.getEntity().getReferenceID();
@@ -70,4 +70,12 @@ public class JioRcsWebhookEventHandler implements RcsWebhookEventHandler {
             log.warn("Payload is empty in the received JSON {}", jsonNode);
         }
     }
+
+    private String stripLeadingPlus(String phoneNumber){
+        if(phoneNumber!=null && phoneNumber.startsWith("+")){
+            return phoneNumber.substring(1);
+        }
+        return phoneNumber;
+    }
+
 }

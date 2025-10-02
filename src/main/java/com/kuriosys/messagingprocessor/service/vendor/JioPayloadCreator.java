@@ -44,7 +44,7 @@ public class JioPayloadCreator implements PayloadCreator {
     private Map<String, Object> formPlainTextPayload(RcsPlainText plainText) {
         Map<String, Object> payload = new java.util.HashMap<>();
         payload.put("plainText", plainText.getText());
-        if (plainText.getSuggestions() != null && !plainText.getSuggestions().isEmpty()) {
+        if(plainText.getSuggestions() != null && !plainText.getSuggestions().isEmpty()) {
             payload.put("suggestions", buildSuggestions(plainText.getSuggestions()));
         }
         return payload;

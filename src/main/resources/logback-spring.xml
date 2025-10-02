@@ -10,7 +10,20 @@
 
     <springProfile name="dev">
         <appender name="FILE" class="ch.qos.logback.core.FileAppender">
-            <file>/var/log/message-processor/message-processor.log</file>
+            <file>/var/log/message-processing-services-dev/application.log</file>
+            <encoder>
+                <pattern>${LOG_PATTERN}</pattern>
+            </encoder>
+        </appender>
+        <root level="DEBUG">
+            <appender-ref ref="STDOUT"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="test">
+        <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+            <file>/var/log/message-processing-services-test/application.log</file>
             <encoder>
                 <pattern>${LOG_PATTERN}</pattern>
             </encoder>
@@ -23,7 +36,7 @@
 
     <springProfile name="prod">
         <appender name="FILE" class="ch.qos.logback.core.FileAppender">
-            <file>/var/log/message-processor/message-processor.log</file>
+            <file>/var/log/message-processing-services-prod/application.log</file>
             <encoder>
                 <pattern>${LOG_PATTERN}</pattern>
             </encoder>
