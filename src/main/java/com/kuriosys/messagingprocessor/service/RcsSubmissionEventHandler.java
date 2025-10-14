@@ -8,6 +8,7 @@ import com.kuriosys.messagingprocessor.model.*;
 import com.kuriosys.messagingprocessor.repository.*;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;
+import com.kuriosys.messagingprocessor.service.vendor.DataGPayloadCreator;
 import com.kuriosys.messagingprocessor.service.vendor.JioPayloadCreator;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -29,9 +30,7 @@ public class RcsSubmissionEventHandler {
     private final Logger log = LoggerFactory.getLogger(RcsSubmissionEventHandler.class);
 
     private final RcsMessageRequestRepository rcsMessageRequestRepository;
-    private final RcsInvalidRecipientRepository rcsInvalidRecipientRepository;
     private final RcsMessageRecipientRepository rcsMessageRecipientRepository;
-    private final KafkaProducerService kafkaProducerService;
     private final ObjectMapper objectMapper;
     private final RcsMessageTemplateRepository rcsMessageTemplateRepository;
     private final ContactRepository contactRepository;
@@ -101,15 +100,7 @@ public class RcsSubmissionEventHandler {
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
 
-            PayloadCreator payloadCreator = null;
-            if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
-                payloadCreator = new JioPayloadCreator(
-                        rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-                );
-            }
-            else{
-                throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
-            }
+            PayloadCreator payloadCreator = getPayloadCreator(serviceRouteDetails, rcsMessageRequest, rcsExternalAgent);
 
             final List<RcsMessageRecipient> validRcsMessageRecipients = new ArrayList<>();
             final List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
@@ -204,6 +195,24 @@ public class RcsSubmissionEventHandler {
         }
     }
 
+    private static PayloadCreator getPayloadCreator(ServiceRouteDetails serviceRouteDetails, RcsMessageRequest rcsMessageRequest, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
+        PayloadCreator payloadCreator;
+        if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
+            payloadCreator = new JioPayloadCreator(
+                    rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
+            );
+        }
+        else if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.DATAG.name())){
+            payloadCreator = new DataGPayloadCreator(
+                    rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
+            );
+        }
+        else{
+            throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
+        }
+        return payloadCreator;
+    }
+
     private void sendPersonalizedMessageToFileContacts(RcsMessageRequest rcsMessageRequest) throws ProcessingException, IOException {
         try {
             int sendBatchSize = 1;
@@ -273,7 +282,7 @@ public class RcsSubmissionEventHandler {
     }
 
     private static PayloadCreator getPayloadCreator(RcsMessageRequest rcsMessageRequest, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
-        PayloadCreator payloadCreator = null;
+        PayloadCreator payloadCreator;
         if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
             if(serviceRouteDetails.getApiKey() == null) {
                 throw new ProcessingException("ServiceRouteDetails or API Key is not set");
@@ -380,15 +389,7 @@ public class RcsSubmissionEventHandler {
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
 
-            PayloadCreator payloadCreator = null;
-            if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
-                payloadCreator = new JioPayloadCreator(
-                        rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-                );
-            }
-            else{
-                throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
-            }
+            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
 
@@ -473,15 +474,7 @@ public class RcsSubmissionEventHandler {
 
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-            PayloadCreator payloadCreator = null;
-            if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
-                payloadCreator = new JioPayloadCreator(
-                        rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-                );
-            }
-            else{
-                throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
-            }
+            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
 
