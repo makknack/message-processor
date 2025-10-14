@@ -488,7 +488,6 @@ public class RcsSubmissionEventHandler {
             List<String> validRecipients = new ArrayList<>();
             Map<String, String> headers = payloadCreator.getHeaders();
 
-            boolean hasMore = true;
             long currentOffset = processedRecord;
             while (true) {
                 List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, FETCH_SIZE);
@@ -684,8 +683,8 @@ public class RcsSubmissionEventHandler {
                     return Mono.empty();
                 })
                 .onErrorResume(ex -> {
-                    log.error("API call failed for messageRequestId {}", rcsMessageRecipients.get(0).getMessageRequestId(), ex);
-                    String request = null;
+                    log.error("API call failed for messageRequestId {}", rcsMessageRecipients.getFirst().getMessageRequestId(), ex);
+                    String request;
                     try {
                         request = objectMapper.writeValueAsString(requestBody);
                     } catch (JsonProcessingException e) {
