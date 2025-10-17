@@ -2,7 +2,7 @@ spring:
   application:
     name: messaging-processor
   datasource:
-    url: jdbc:postgresql://13.204.28.222:5432/messagefusion_db
+    url: ${database.url}
     username: postgres
     password: B3Fu4Ao5BJ8Bb1D
     driver-class-name: org.postgresql.Driver

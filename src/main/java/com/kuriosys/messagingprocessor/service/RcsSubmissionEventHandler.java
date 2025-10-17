@@ -8,8 +8,11 @@ import com.kuriosys.messagingprocessor.model.*;
 import com.kuriosys.messagingprocessor.repository.*;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;
+import com.kuriosys.messagingprocessor.service.vendor.DataGApiResponseHandler;
 import com.kuriosys.messagingprocessor.service.vendor.DataGPayloadCreator;
+import com.kuriosys.messagingprocessor.service.vendor.JioApiResponseHandler;
 import com.kuriosys.messagingprocessor.service.vendor.JioPayloadCreator;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,9 +39,25 @@ public class RcsSubmissionEventHandler {
     private final ContactRepository contactRepository;
     private final ServiceRouteDetailsRepository serviceRouteDetailsRepository;
     private final RcsExternalAgentRepository rcsExternalAgentRepository;
+    private final JioApiResponseHandler jioApiResponseHandler;
+    private final DataGApiResponseHandler dataGApiResponseHandler;
     private final WebClient webClient;
     private final static int INSERT_BATCH_SIZE = 49; // Batch size for inserting recipients
-    private final int FETCH_SIZE = 49; // Batch size for processing contacts
+    private final int CONTACT_BATCH_SIZE_PER_REQUEST = 49;
+    private final static int DB_FETCH_SIZE = 49; // Batch size for processing contacts
+
+    private final Map<ServiceProvider, ServiceProviderApiResponseHandler> serviceProviderApiResponseHandlerMap = new HashMap<>();
+
+    @PostConstruct
+    public void registerServiceProviderHandlers() {
+        serviceProviderApiResponseHandlerMap.put(ServiceProvider.JIO, jioApiResponseHandler);
+        serviceProviderApiResponseHandlerMap.put(ServiceProvider.DATAG, dataGApiResponseHandler);
+        // Add more as needed
+    }
+
+    private ServiceProviderApiResponseHandler getServiceProviderApiResponseHandler(ServiceProvider serviceProvider) {
+        return serviceProviderApiResponseHandlerMap.get(serviceProvider);
+    }
 
     public void sendToFileNumbers(RcsSubmissionEvent rcsSubmissionEvent) throws IOException {
         RcsMessageRequest rcsMessageRequest;
@@ -76,7 +95,7 @@ public class RcsSubmissionEventHandler {
 
     public void sendToManualNumbers(RcsSubmissionEvent rcsSubmissionEvent) {
         RcsMessageRequest rcsMessageRequest = null;
-        int sendBatchSize = 49;
+        int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
         try {
             rcsMessageRequest = rcsMessageRequestRepository.findByMessageRequestIdAndStatusIn(rcsSubmissionEvent.getMessageRequestId(), List.of(RcsMessageRequestStatus.PENDING))
                     .orElseThrow(() -> new ProcessingException("RCS Message Request not found for ID: " + rcsSubmissionEvent.getMessageRequestId()));
@@ -99,8 +118,8 @@ public class RcsSubmissionEventHandler {
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
-
-            PayloadCreator payloadCreator = getPayloadCreator(serviceRouteDetails, rcsMessageRequest, rcsExternalAgent);
+            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
+            PayloadCreator payloadCreator = getPayloadCreator(serviceProvider, serviceRouteDetails, rcsMessageRequest, rcsExternalAgent);
 
             final List<RcsMessageRecipient> validRcsMessageRecipients = new ArrayList<>();
             final List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
@@ -122,7 +141,7 @@ public class RcsSubmissionEventHandler {
                             RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                             Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
                             Map<String, String> additionalHeaders = payloadCreator.getHeaders();
-                            sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient));
+                            sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient), serviceProvider);
                             validRecipientsCount++;
                       } else {
                             RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
@@ -145,12 +164,13 @@ public class RcsSubmissionEventHandler {
             } else {
                 Object contentObject = parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType());
                 Map<String, String> headers = payloadCreator.getHeaders();
+
                 do {
                     if (recipients.size() < sendBatchSize) {
                         sendBatchSize = recipients.size();
                     }
                     List<String> recipientsBatch = recipients.subList(0, sendBatchSize);
-                    recipients = recipients.subList(sendBatchSize, recipients.size());
+                    recipients = recipients.subList(CONTACT_BATCH_SIZE_PER_REQUEST, recipients.size());
                     for (String recipient : recipientsBatch) {
                         String validRecipient =  validateNumber(recipient);
                         if (validRecipient != null) {
@@ -172,7 +192,7 @@ public class RcsSubmissionEventHandler {
                     }
                     if (!validRecipients.isEmpty()) {
                         Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients));
+                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients),serviceProvider);
                         validRcsMessageRecipients.clear();
                     }
                 } while (!recipients.isEmpty());
@@ -195,14 +215,14 @@ public class RcsSubmissionEventHandler {
         }
     }
 
-    private static PayloadCreator getPayloadCreator(ServiceRouteDetails serviceRouteDetails, RcsMessageRequest rcsMessageRequest, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
+    private static PayloadCreator getPayloadCreator(ServiceProvider serviceProvider, ServiceRouteDetails serviceRouteDetails, RcsMessageRequest rcsMessageRequest, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
         PayloadCreator payloadCreator;
-        if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
+        if(serviceProvider == ServiceProvider.JIO){
             payloadCreator = new JioPayloadCreator(
                     rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
             );
         }
-        else if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.DATAG.name())){
+        else if(serviceProvider == ServiceProvider.DATAG){
             payloadCreator = new DataGPayloadCreator(
                     rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
             );
@@ -230,6 +250,7 @@ public class RcsSubmissionEventHandler {
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
 
+            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
             PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
@@ -248,7 +269,7 @@ public class RcsSubmissionEventHandler {
                     RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                     Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
                     Map<String, String> headers = payloadCreator.getHeaders();
-                    sendAndInsert(url, requestBody, headers, List.of(rcsMessageRecipient));
+                    sendAndInsert(url, requestBody, headers, List.of(rcsMessageRecipient), serviceProvider);
                     validRecipientsCount++;
                 } else {
                     RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
@@ -299,7 +320,7 @@ public class RcsSubmissionEventHandler {
 
     private void sendBulkMessageToFileContacts(RcsMessageRequest rcsMessageRequest) {
         try {
-            int sendBatchSize = 49;
+            int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
             CsvReaderService csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, sendBatchSize);
 
             ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
@@ -307,7 +328,7 @@ public class RcsSubmissionEventHandler {
 
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-
+            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
             PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
@@ -322,7 +343,7 @@ public class RcsSubmissionEventHandler {
             List<String> validRecipients = new ArrayList<>();
             Map<String, String> headers = payloadCreator.getHeaders();
             while (csvReaderService.hasMoreRecords()) {
-                List<String> recipients = csvReaderService.getNextBatchOfFirstColumn(FETCH_SIZE);
+                List<String> recipients = csvReaderService.getNextBatchOfFirstColumn(sendBatchSize);
                 if (recipients == null || recipients.isEmpty()) {
                     break;
                 }
@@ -355,7 +376,7 @@ public class RcsSubmissionEventHandler {
 
                     if (!validRecipients.isEmpty()) {
                         Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients));
+                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients), serviceProvider);
                         validRcsMessageRecipients.clear();
                         validRecipients.clear();
                     }
@@ -389,6 +410,7 @@ public class RcsSubmissionEventHandler {
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
 
+            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
             PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
@@ -414,7 +436,7 @@ public class RcsSubmissionEventHandler {
             long currentOffset = processedRecord;
             Map<String, String> additionalHeaders = payloadCreator.getHeaders();
             while (hasMore) {
-                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, FETCH_SIZE);
+                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, DB_FETCH_SIZE);
                 if (recipients == null || recipients.isEmpty()) {
                     break;
                 }
@@ -428,7 +450,7 @@ public class RcsSubmissionEventHandler {
                         log.debug("personalizedContentObject  {}, {}", personalizedContentObject, nextRecordMap);
                         RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
                         Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
-                        sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient));
+                        sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient), serviceProvider);
                         validRecipientsCount++;
                     } else {
                         RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
@@ -441,7 +463,7 @@ public class RcsSubmissionEventHandler {
                         inValidRcsMessageRecipients.clear();
                     }
                 }
-                if (recipients.size() < FETCH_SIZE) {
+                if (recipients.size() < DB_FETCH_SIZE) {
                     hasMore = false;
                 }
                 currentOffset = processedRecord;
@@ -468,12 +490,13 @@ public class RcsSubmissionEventHandler {
 
     private void sendBulkMessagesToGroup(RcsMessageRequest rcsMessageRequest) {
         try {
-            int sendBatchSize = 49;
+            int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
             ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
                     .orElseThrow(() -> new ProcessingException("Service route details not found"));
 
             RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
                     .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
+            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
             PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
 
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
@@ -490,7 +513,7 @@ public class RcsSubmissionEventHandler {
 
             long currentOffset = processedRecord;
             while (true) {
-                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, FETCH_SIZE);
+                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, sendBatchSize);
                 if (recipients == null || recipients.isEmpty()) {
                     break;
                 }
@@ -507,7 +530,7 @@ public class RcsSubmissionEventHandler {
                             RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
                             validRcsMessageRecipients.add(rcsMessageRecipient);
                         } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(), rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
+                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
                             inValidRcsMessageRecipients.add(rcsMessageRecipient);
                         }
                     }
@@ -523,7 +546,7 @@ public class RcsSubmissionEventHandler {
 
                     if (!validRecipients.isEmpty()) {
                         Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients));
+                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients), serviceProvider);
                         validRcsMessageRecipients.clear();
                         validRecipients.clear();
                     }
@@ -622,7 +645,6 @@ public class RcsSubmissionEventHandler {
         return personalizedContent;
     }
 
-    // Returns normalized 12-digit Indian number (91XXXXXXXXXX) if valid, else null
     private String validateNumber(String number) {
         if (number == null) return null;
         number = number.replaceAll("[\\s-]", "");
@@ -647,7 +669,8 @@ public class RcsSubmissionEventHandler {
         return null;
     }
 
-    private void sendAndInsert(String url, Map<String, Object> requestBody, Map<String, String> additionalHeaders, List<RcsMessageRecipient> rcsMessageRecipients) throws ProcessingException, JsonProcessingException {
+    private void sendAndInsert(String url, Map<String, Object> requestBody, Map<String, String> additionalHeaders, List<RcsMessageRecipient> rcsMessageRecipients, ServiceProvider serviceProvider) throws ProcessingException, JsonProcessingException {
+        ServiceProviderApiResponseHandler  responseHandler = getServiceProviderApiResponseHandler(serviceProvider);
         webClient.post()
                 .uri(url)
                 .headers(httpHeaders -> {
@@ -663,11 +686,7 @@ public class RcsSubmissionEventHandler {
                     String request = null;
                     try {
                         log.debug("Received response: {}", responseStr);
-                        ObjectMapper mapper = new ObjectMapper();
-                        Map<?, ?> responseMap = mapper.readValue(responseStr, Map.class);
-                        if (responseMap.containsKey("referenceID")) {
-                            referenceId = responseMap.get("referenceID").toString();
-                        }
+                        referenceId = responseHandler.handle(responseStr);
                         request = objectMapper.writeValueAsString(requestBody);
                     } catch (Exception e) {
                         log.warn("Failed to parse response as JSON: {},{}", responseStr, e.getMessage());
