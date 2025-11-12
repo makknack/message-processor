@@ -7,7 +7,7 @@ import java.util.List;
 
 @Data
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class RcsPlainText {
+public class RcsPlainText extends RcsContent{
     @JsonAlias("text")
     private String text;
 

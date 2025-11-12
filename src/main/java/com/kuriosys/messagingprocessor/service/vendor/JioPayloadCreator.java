@@ -6,29 +6,22 @@ import com.kuriosys.messagingprocessor.enums.RcsContentType;
 import com.kuriosys.messagingprocessor.exception.ProcessingException;
 import com.kuriosys.messagingprocessor.model.*;
 import com.kuriosys.messagingprocessor.service.PayloadCreator;
+import com.kuriosys.messagingprocessor.service.PayloadRequest;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
 
-public class JioPayloadCreator implements PayloadCreator {
-
-    private final RcsMessageRequest rcsMessageRequest;
-    private final RcsExternalAgent rcsExternalAgent;
-    private final ServiceRouteDetails serviceRouteDetails;
-    private final  Map<String,String> headers;
-
-    public JioPayloadCreator(RcsMessageRequest rcsMessageRequest,
-                            ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent) {
-        this.rcsMessageRequest = rcsMessageRequest;
-        this.rcsExternalAgent = rcsExternalAgent;
-        this.serviceRouteDetails = serviceRouteDetails;
-        this.headers = getHeaders();
-    }
+@Service
+@RequiredArgsConstructor
+public class JioPayloadCreator  implements  PayloadCreator{
 
     @Override
-    public Map<String, Object> createPayload(Object content, List<String> recipients) throws ProcessingException, JsonProcessingException {
+    public Map<String, Object> createPayload(PayloadRequest payloadRequest) throws ProcessingException {
         Map<String, Object> payload;
-        RcsContentType rcsContentType = rcsMessageRequest.getContentType();
+        Object content = payloadRequest.getContent();
+        RcsContentType rcsContentType =payloadRequest.getContentType();
         if (rcsContentType == RcsContentType.PLAIN_TEXT) {
             payload = formPlainTextPayload((RcsPlainText) content);
         } else if (rcsContentType == RcsContentType.RICH_CARD) {
@@ -38,7 +31,8 @@ public class JioPayloadCreator implements PayloadCreator {
         } else {
             throw new ProcessingException("Unsupported content type: " + content.getClass().getName());
         }
-       return formTheFinalPayload(payload,recipients);
+        getHeaders(payloadRequest);
+       return formTheFinalPayload(payloadRequest, payload,payloadRequest.getRecipients());
     }
 
     private Map<String, Object> formPlainTextPayload(RcsPlainText plainText) {
@@ -172,13 +166,13 @@ public class JioPayloadCreator implements PayloadCreator {
     }
 
 
-    private Map<String, Object> formTheFinalPayload(Map<String, Object> content, List<String> recipients) {
+    private Map<String, Object> formTheFinalPayload(PayloadRequest payloadRequest, Map<String, Object> content, List<String> recipients) {
         Map<String, Object> data = Map.of(
                 "content", content
         );
         return Map.of(
-                "messageID", rcsMessageRequest.getMessageRequestId(),
-                "agentID", rcsExternalAgent.getExternalAgentId(),
+                "messageID", payloadRequest.getMessageRequestId(),
+                "agentID", payloadRequest.getRcsExternalAgentId(),
                 "contacts", recipients,
                 "data", data
         );
@@ -219,14 +213,11 @@ public class JioPayloadCreator implements PayloadCreator {
         return postBackData + "{{$50}}"; // In JIO payload {{$50}} must be appended to postBack data.
     }
 
-    public Map<String, String> getHeaders() {
-        if (this.headers != null) {
-            return this.headers;
-        }
-
+    @Override
+    public Map<String, String> getHeaders(PayloadRequest payloadRequest) {
         return Map.of(
                 "Content-Type", "application/json",
-                "x-apikey", serviceRouteDetails.getApiKey()
+                "x-apikey", payloadRequest.getServiceRouteDetails().getApiKey()
         );
     }
 }

@@ -1,11 +1,6 @@
 spring:
   application:
     name: messaging-processor
-  datasource:
-    url: ${database.url}
-    username: postgres
-    password: B3Fu4Ao5BJ8Bb1D
-    driver-class-name: org.postgresql.Driver
   jpa:
     database-platform: org.hibernate.dialect.PostgreSQLDialect
 

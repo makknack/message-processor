@@ -53,6 +53,9 @@ public class ServiceRouteDetails {
     @Column(name = "api_key", length = 512)
     private String apiKey;
 
+    @Column(name = "request_batch_size", nullable = false)
+    private int requestBatchSize;
+
     @Enumerated(EnumType.ORDINAL)
     @Column(name = "status", nullable = false)
     private ServiceRouteStatus status ;

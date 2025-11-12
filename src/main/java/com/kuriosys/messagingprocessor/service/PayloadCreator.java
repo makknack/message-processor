@@ -8,9 +8,6 @@ import java.util.Map;
 
 public interface PayloadCreator {
 
-    Map<String, Object> createPayload(Object content, List<String> recipients) throws ProcessingException, JsonProcessingException;
-
-    Map<String, String> getHeaders();
-
+    Map<String, Object> createPayload(PayloadRequest payloadRequest) throws ProcessingException, JsonProcessingException;
+    Map<String, String> getHeaders(PayloadRequest payloadRequest);
 }
-

@@ -41,16 +41,16 @@ public class RcsMessageRequest {
     private String comments;
 
     @Column(name = "total_recipients", nullable = false)
-    private Long totalRecipients;
+    private Integer totalRecipients;
 
     @Column(name = "processed_record", nullable = false)
-    private Long processedRecord;
+    private Integer processedRecord;
 
     @Column(name = "valid_recipients")
-    private Long validRecipients;
+    private Integer validRecipients;
 
     @Column(name = "invalid_recipients")
-    private Long invalidRecipients;
+    private Integer invalidRecipients;
 
     @Column(name = "file_path")
     private String filePath;

@@ -5,7 +5,7 @@ import lombok.Data;
 import java.util.List;
 
 @Data
-public class MultipleRichCard {
+public class MultipleRichCard extends RcsContent{
     @JsonAlias("contents")
     private List<CardContent> contents;
 

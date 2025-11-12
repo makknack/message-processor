@@ -18,13 +18,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+
+import static com.kuriosys.messagingprocessor.enums.EventType.*;
 
 @Service
 @RequiredArgsConstructor
@@ -42,60 +42,28 @@ public class RcsSubmissionEventHandler {
     private final JioApiResponseHandler jioApiResponseHandler;
     private final DataGApiResponseHandler dataGApiResponseHandler;
     private final WebClient webClient;
-    private final static int INSERT_BATCH_SIZE = 49; // Batch size for inserting recipients
-    private final int CONTACT_BATCH_SIZE_PER_REQUEST = 49;
-    private final static int DB_FETCH_SIZE = 49; // Batch size for processing contacts
+    private final static int DB_FETCH_SIZE = 200; // Batch size for processing contacts
+    private final RcsExternalTemplateRepository rcsExternalTemplateRepository;
+    private final JioPayloadCreator jioPayloadCreator;
+    private final DataGPayloadCreator dataGPayloadCreator;
+    private final MessageSendingService messageSendingService;
+    private final RcsMessageRequestService rcsMessageRequestService;
+    private final RcsMessageRecipientService rcsMessageRecipientService;
 
     private final Map<ServiceProvider, ServiceProviderApiResponseHandler> serviceProviderApiResponseHandlerMap = new HashMap<>();
+    private final Map<ServiceProvider, PayloadCreator> payloadCreatorMap = new HashMap<>();
 
     @PostConstruct
     public void registerServiceProviderHandlers() {
         serviceProviderApiResponseHandlerMap.put(ServiceProvider.JIO, jioApiResponseHandler);
         serviceProviderApiResponseHandlerMap.put(ServiceProvider.DATAG, dataGApiResponseHandler);
-        // Add more as needed
+        payloadCreatorMap.put(ServiceProvider.JIO, jioPayloadCreator);
+        payloadCreatorMap.put(ServiceProvider.DATAG, dataGPayloadCreator);
     }
 
-    private ServiceProviderApiResponseHandler getServiceProviderApiResponseHandler(ServiceProvider serviceProvider) {
-        return serviceProviderApiResponseHandlerMap.get(serviceProvider);
-    }
-
-    public void sendToFileNumbers(RcsSubmissionEvent rcsSubmissionEvent) throws IOException {
-        RcsMessageRequest rcsMessageRequest;
-        try {
-            rcsMessageRequest = rcsMessageRequestRepository.findByMessageRequestId(rcsSubmissionEvent.getMessageRequestId())
-                    .orElseThrow( () -> new ProcessingException("RCS Message Request not found for ID: " + rcsSubmissionEvent.getMessageRequestId()));
-      
-            if (rcsMessageRequest.getIsPersonalized()) {
-                sendPersonalizedMessageToFileContacts(rcsMessageRequest);
-            } else {
-                sendBulkMessageToFileContacts(rcsMessageRequest);
-            }
-        } catch (ProcessingException e) {
-            log.warn("Processing exception occurred: {}", e.getMessage());
-        }
-    }
-
-    public void sendToGroupNumbers(RcsSubmissionEvent rcsSubmissionEvent) throws IOException {
-        Optional<RcsMessageRequest> rcsMessageRequestOptional;
-        try {
-            rcsMessageRequestOptional = rcsMessageRequestRepository.findByMessageRequestId(rcsSubmissionEvent.getMessageRequestId());
-            if (rcsMessageRequestOptional.isEmpty()) {
-                throw new ProcessingException("RCS Message Request not found for ID");
-            }
-            RcsMessageRequest rcsMessageRequest = rcsMessageRequestOptional.get();
-            if (rcsMessageRequest.getIsPersonalized()) {
-                sendPersonalizedMessagesToGroup(rcsMessageRequest);
-            } else {
-                sendBulkMessagesToGroup(rcsMessageRequest);
-            }
-        } catch (ProcessingException e) {
-            log.warn("Processing exception occurred: {}", e.getMessage());
-        }
-    }
-
-    public void sendToManualNumbers(RcsSubmissionEvent rcsSubmissionEvent) {
+    public void handle(RcsSubmissionEvent rcsSubmissionEvent) throws IOException, ProcessingException {
         RcsMessageRequest rcsMessageRequest = null;
-        int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
+        EventType eventType = EventType.fromValue(rcsSubmissionEvent.getEventType());
         try {
             rcsMessageRequest = rcsMessageRequestRepository.findByMessageRequestIdAndStatusIn(rcsSubmissionEvent.getMessageRequestId(), List.of(RcsMessageRequestStatus.PENDING))
                     .orElseThrow(() -> new ProcessingException("RCS Message Request not found for ID: " + rcsSubmissionEvent.getMessageRequestId()));
@@ -112,372 +80,190 @@ public class RcsSubmissionEventHandler {
             RcsMessageTemplate rcsMessageTemplate = rcsMessageTemplateRepository.findById(rcsMessageRequest.getMessageTemplateId())
                     .orElseThrow(() -> new ProcessingException("Message template not found"));
 
+            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
+                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
+
             ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
                     .orElseThrow(() -> new ProcessingException("Service route details not found"));
 
-            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
-                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
             String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
             ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
-            PayloadCreator payloadCreator = getPayloadCreator(serviceProvider, serviceRouteDetails, rcsMessageRequest, rcsExternalAgent);
 
-            final List<RcsMessageRecipient> validRcsMessageRecipients = new ArrayList<>();
-            final List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
-            final List<String> validRecipients = new ArrayList<>();
+            RcsExternalTemplate rcsExternalTemplate = null;
+            PayloadCreator payloadCreator = null;
+            ServiceProviderApiResponseHandler responseHandler = null;
+            if (ServiceProvider.JIO.name().equalsIgnoreCase(serviceRouteDetails.getServiceProvider())) {
 
-            long processedRecord = rcsMessageRequest.getProcessedRecord();
-            long validRecipientsCount = rcsMessageRequest.getValidRecipients();
-            long invalidRecipientsCount = rcsMessageRequest.getInvalidRecipients();
-            if (rcsMessageRequest.getIsPersonalized()) {
-                for (int i = 0; i < recipients.size(); i++) {
-                        String recipient = recipients.get(i);
-                        String validRecipient =  validateNumber(recipient);
-                        if(validRecipient != null){
-                            Object templateContentObject = parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType());
-                            Map<String, String> personalizedDetailsMap = rcsSubmissionEvent.getTemplateVariables().get(i);
-                            log.debug("personalizedDetailsMap  {}", personalizedDetailsMap);
-                            Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, personalizedDetailsMap);
-                            String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
-                            Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
-                            Map<String, String> additionalHeaders = payloadCreator.getHeaders();
-                            sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient), serviceProvider);
-                            validRecipientsCount++;
-                      } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                            inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                            invalidRecipientsCount++;
-                    }
-                    processedRecord++;
-                }
-                if (!inValidRcsMessageRecipients.isEmpty()) {
-                    rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                    inValidRcsMessageRecipients.clear();
-                }
-                rcsMessageRequest.setProcessedRecord(processedRecord);
-                rcsMessageRequest.setValidRecipients(validRecipientsCount);
-                rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-                rcsMessageRequest.setStatus(RcsMessageRequestStatus.COMPLETED);
-                rcsMessageRequest.setCompletedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                rcsMessageRequestRepository.save(rcsMessageRequest);
+            } else if (ServiceProvider.DATAG.name().equalsIgnoreCase(serviceRouteDetails.getServiceProvider())) {
+                rcsExternalTemplate = rcsExternalTemplateRepository.findByServiceRouteIdAndMessageTemplateId( serviceRouteDetails.getServiceRouteId(), rcsMessageTemplate.getMessageTemplateId()).orElseThrow(
+                        () -> new ProcessingException("External template not found for id: " + rcsMessageTemplate.getMessageTemplateId())
+                );
             } else {
-                Object contentObject = parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType());
-                Map<String, String> headers = payloadCreator.getHeaders();
-
-                do {
-                    if (recipients.size() < sendBatchSize) {
-                        sendBatchSize = recipients.size();
-                    }
-                    List<String> recipientsBatch = recipients.subList(0, sendBatchSize);
-                    recipients = recipients.subList(CONTACT_BATCH_SIZE_PER_REQUEST, recipients.size());
-                    for (String recipient : recipientsBatch) {
-                        String validRecipient =  validateNumber(recipient);
-                        if (validRecipient != null) {
-                            validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
-                            validRcsMessageRecipients.add(rcsMessageRecipient);
-                            validRecipientsCount++;
-                        } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                            inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                            invalidRecipientsCount++;
-                        }
-                        processedRecord++;
-                    }
-
-                    if (!inValidRcsMessageRecipients.isEmpty()) {
-                        rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                        inValidRcsMessageRecipients.clear();
-                    }
-                    if (!validRecipients.isEmpty()) {
-                        Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients),serviceProvider);
-                        validRcsMessageRecipients.clear();
-                    }
-                } while (!recipients.isEmpty());
-                rcsMessageRequest.setProcessedRecord(processedRecord);
-                rcsMessageRequest.setValidRecipients(validRecipientsCount);
-                rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-                rcsMessageRequest.setStatus(RcsMessageRequestStatus.COMPLETED);
-                rcsMessageRequest.setCompletedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                rcsMessageRequestRepository.save(rcsMessageRequest);
+                throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
             }
-        } catch (ProcessingException | JsonProcessingException e) {
+
+            if (RCS_NUMBER_MSG_REQ == eventType) {
+                sendToManualNumbers(rcsSubmissionEvent, rcsMessageRequest, rcsMessageTemplate, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
+            } else if (RCS_FILE_MSG_REQ == eventType) {
+                processFile(rcsSubmissionEvent, rcsMessageRequest, rcsMessageTemplate, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
+            } else if (RCS_GROUP_MSG_REQ == eventType) {
+                sendMessagesToGroup(rcsSubmissionEvent, rcsMessageRequest, rcsMessageTemplate, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
+            }
+
+
+        } catch (ProcessingException | IOException e) {
             log.error("Processing exception occurred: {}", rcsSubmissionEvent.getMessageRequestId(), e);
             if (rcsMessageRequest != null) {
-                rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
-                rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                rcsMessageRequest.setComments(e.getMessage());
-                rcsMessageRequestRepository.save(rcsMessageRequest);
+                rcsMessageRequestService.updateMessageRequestStatus(rcsMessageRequest, RcsMessageRequestStatus.FAILED, e.getMessage());
             }
+            throw e;
         }
     }
 
-    private static PayloadCreator getPayloadCreator(ServiceProvider serviceProvider, ServiceRouteDetails serviceRouteDetails, RcsMessageRequest rcsMessageRequest, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
-        PayloadCreator payloadCreator;
-        if(serviceProvider == ServiceProvider.JIO){
-            payloadCreator = new JioPayloadCreator(
-                    rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-            );
-        }
-        else if(serviceProvider == ServiceProvider.DATAG){
-            payloadCreator = new DataGPayloadCreator(
-                    rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-            );
-        }
-        else{
-            throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
-        }
-        return payloadCreator;
-    }
+    private void processFile(RcsSubmissionEvent rcsSubmissionEvent, RcsMessageRequest rcsMessageRequest, RcsMessageTemplate rcsMessageTemplate, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent, RcsExternalTemplate rcsExternalTemplate) throws IOException, ProcessingException {
+        CsvReaderService csvReaderService = null;
 
-    private void sendPersonalizedMessageToFileContacts(RcsMessageRequest rcsMessageRequest) throws ProcessingException, IOException {
-        try {
-            int sendBatchSize = 1;
-            CsvReaderService csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, sendBatchSize);
-            Optional<RcsMessageTemplate> rcsMessageTemplateOpt = rcsMessageTemplateRepository.findById(rcsMessageRequest.getMessageTemplateId());
-            if (rcsMessageTemplateOpt.isEmpty()) {
-                throw new ProcessingException("Message template not found " + rcsMessageRequest.getMessageTemplateId());
-            }
-            RcsMessageTemplate rcsMessageTemplate = rcsMessageTemplateOpt.get();
+        if (rcsMessageRequest.getIsPersonalized()) {
+            csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, 1);
+            csvReaderService.skipRecords(rcsMessageRequest.getProcessedRecord());
 
-            ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
-                    .orElseThrow(() -> new ProcessingException("Service route details not found"));
-
-            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
-                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-            String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
-
-            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
-            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
-
-            List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
-
-            long processedRecord = rcsMessageRequest.getProcessedRecord();
-            long validRecipientsCount = rcsMessageRequest.getValidRecipients();
-            long invalidRecipientsCount = rcsMessageRequest.getInvalidRecipients();
-            Object templateContentObject = parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType());
             while (csvReaderService.hasMoreRecords()) {
                 Map<String, String> nextRecordMap = csvReaderService.getNextRecordAsMap();
                 String recipient = nextRecordMap.get(Constants.FILE_HEADER_RECIPIENTS);
-                String validRecipient =  validateNumber(recipient);
-                if (validRecipient!= null) {
-                    Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, nextRecordMap);
-                    String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
-                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
-                    Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
-                    Map<String, String> headers = payloadCreator.getHeaders();
-                    sendAndInsert(url, requestBody, headers, List.of(rcsMessageRecipient), serviceProvider);
-                    validRecipientsCount++;
-                } else {
-                    RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                    inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                    invalidRecipientsCount++;
-                }
-                processedRecord++;
-                if (!inValidRcsMessageRecipients.isEmpty() && inValidRcsMessageRecipients.size() >= INSERT_BATCH_SIZE) {
-                    rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                    inValidRcsMessageRecipients.clear();
-                }
+                processMessages(rcsMessageRequest, parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType()), nextRecordMap, List.of(recipient), serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
             }
-            if (!inValidRcsMessageRecipients.isEmpty()) {
-                rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                inValidRcsMessageRecipients.clear();
+
+        } else {
+
+            int requestBatchSize = serviceRouteDetails.getRequestBatchSize();
+            csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, requestBatchSize);
+            csvReaderService.skipRecords(rcsMessageRequest.getProcessedRecord());
+
+            while (csvReaderService.hasMoreRecords()) {
+                List<String> recipients = csvReaderService.getNextBatchOfFirstColumn(requestBatchSize);
+                if (recipients == null || recipients.isEmpty()) {
+                    break;
+                }
+                processMessages(rcsMessageRequest, parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType()), null, recipients, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
             }
-            rcsMessageRequest.setProcessedRecord(processedRecord);
-            rcsMessageRequest.setValidRecipients(validRecipientsCount);
-            rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.COMPLETED);
-            rcsMessageRequest.setCompletedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequestRepository.save(rcsMessageRequest);
-        } catch (ProcessingException | JsonProcessingException e) {
-            log.error("Processing exception occurred", e);
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setComments(e.getMessage());
-            rcsMessageRequestRepository.save(rcsMessageRequest);
         }
     }
 
-    private static PayloadCreator getPayloadCreator(RcsMessageRequest rcsMessageRequest, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent) throws ProcessingException {
-        PayloadCreator payloadCreator;
-        if(serviceRouteDetails.getServiceProvider().equalsIgnoreCase(ServiceProvider.JIO.name())){
-            if(serviceRouteDetails.getApiKey() == null) {
-                throw new ProcessingException("ServiceRouteDetails or API Key is not set");
+    private void sendToManualNumbers(RcsSubmissionEvent rcsSubmissionEvent, RcsMessageRequest rcsMessageRequest, RcsMessageTemplate rcsMessageTemplate, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent, RcsExternalTemplate rcsExternalTemplate) throws JsonProcessingException, ProcessingException {
+        List<String> recipients = rcsSubmissionEvent.getRecipients();
+        recipients = recipients.subList(rcsMessageRequest.getProcessedRecord(), recipients.size()); // skip processed records
+
+        if (rcsMessageRequest.getIsPersonalized()) {
+            Object contentObject = parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType());
+            for (int i = 0; i < recipients.size(); i++) {
+                Map<String, String> personalizedValues = rcsSubmissionEvent.getTemplateVariables().get(i);
+                processMessages(rcsMessageRequest, contentObject, personalizedValues, List.of(recipients.get(i)), serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
             }
-            payloadCreator = new JioPayloadCreator(
-                    rcsMessageRequest, serviceRouteDetails, rcsExternalAgent
-            );
+        } else {
+            Object contentObject = parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType());
+            final int requestBatchSize = serviceRouteDetails.getRequestBatchSize();
+            int startIndex = 0;
+            int total = recipients.size();
+            while (startIndex < total) {
+                int endIndex = Math.min(startIndex + requestBatchSize, total);
+                List<String> recipientsBatch = recipients.subList(startIndex, endIndex);
+                processMessages(rcsMessageRequest, contentObject, null, recipientsBatch, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
+                startIndex = endIndex;
+            }
         }
-        else{
-            throw new ProcessingException("Invalid service provider " + serviceRouteDetails.getServiceProvider());
+    }
+
+    private PayloadCreator getPayloadCreator(String serviceProvider) throws ProcessingException {
+        ServiceProvider serviceProviderEnum = ServiceProvider.valueOf(serviceProvider);
+        PayloadCreator payloadCreator = payloadCreatorMap.get(serviceProviderEnum);
+        if (payloadCreator == null) {
+            throw new ProcessingException("No response handler found for service provider " + serviceProvider);
         }
         return payloadCreator;
     }
 
-    private void sendBulkMessageToFileContacts(RcsMessageRequest rcsMessageRequest) {
-        try {
-            int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
-            CsvReaderService csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, sendBatchSize);
-
-            ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
-                    .orElseThrow(() -> new ProcessingException("Service route details not found"));
-
-            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
-                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
-            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
-
-            String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
-
-            long processedRecord = rcsMessageRequest.getProcessedRecord();
-            long validRecipientsCount = rcsMessageRequest.getValidRecipients();
-            long invalidRecipientsCount = rcsMessageRequest.getInvalidRecipients();
-
-            Object contentObject = parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType());
-            List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
-            List<RcsMessageRecipient> validRcsMessageRecipients = new ArrayList<>();
-            List<String> validRecipients = new ArrayList<>();
-            Map<String, String> headers = payloadCreator.getHeaders();
-            while (csvReaderService.hasMoreRecords()) {
-                List<String> recipients = csvReaderService.getNextBatchOfFirstColumn(sendBatchSize);
-                if (recipients == null || recipients.isEmpty()) {
-                    break;
-                }
-                do {
-                    if (recipients.size() < sendBatchSize) {
-                        sendBatchSize = recipients.size();
-                    }
-                    List<String> recipientBatch = recipients.subList(0, sendBatchSize);
-                    recipients = recipients.subList(sendBatchSize, recipients.size());
-                    for (String recipient : recipientBatch) {
-                        String validRecipient =  validateNumber(recipient);
-                        if (validRecipient != null) {
-                            validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
-                            validRcsMessageRecipients.add(rcsMessageRecipient);
-                        } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                            inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                        }
-                    }
-
-                    processedRecord += recipientBatch.size();
-                    validRecipientsCount += validRcsMessageRecipients.size();
-                    invalidRecipientsCount += inValidRcsMessageRecipients.size();
-
-                    if (!inValidRcsMessageRecipients.isEmpty()) {
-                        rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                        inValidRcsMessageRecipients.clear();
-                    }
-
-                    if (!validRecipients.isEmpty()) {
-                        Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients), serviceProvider);
-                        validRcsMessageRecipients.clear();
-                        validRecipients.clear();
-                    }
-
-                    rcsMessageRequest.setProcessedRecord(processedRecord);
-                    rcsMessageRequest.setValidRecipients(validRecipientsCount);
-                    rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-                    rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                    rcsMessageRequestRepository.save(rcsMessageRequest);
-                } while (!recipients.isEmpty());
-            }
-        } catch (ProcessingException | IOException e) {
-            log.error("Processing exception occurred", e);
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setComments(e.getMessage());
-            rcsMessageRequestRepository.save(rcsMessageRequest);
+    private ServiceProviderApiResponseHandler getResponseHandler(String serviceProvider) throws ProcessingException {
+        ServiceProvider serviceProviderEnum = ServiceProvider.valueOf(serviceProvider);
+        ServiceProviderApiResponseHandler responseHandler = serviceProviderApiResponseHandlerMap.get(serviceProviderEnum);
+        if (responseHandler == null) {
+            throw new ProcessingException("No response handler found for service provider " + serviceProvider);
         }
+        return responseHandler;
     }
 
-    private void sendPersonalizedMessagesToGroup(RcsMessageRequest rcsMessageRequest) throws ProcessingException, IOException {
+    private void processMessages(RcsMessageRequest rcsMessageRequest, Object contentObject, Map<String, String> personalizedValues, List<String> recipients, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent, RcsExternalTemplate rcsExternalTemplate) throws ProcessingException, JsonProcessingException {
+        int invalidRecipients = 0;
+        int validRecipients = 0;
+        RecipientValidationResult recipientValidationResult = validateRecipients(recipients);
+        if (!recipientValidationResult.validNumbers().isEmpty()) {
+            PayloadRequest.PayloadRequestBuilder payloadRequestBuilder = PayloadRequest.builder();
+
+            Object personalizedContent = null;
+            if (rcsMessageRequest.getIsPersonalized()) {
+                personalizedContent = formPersonalizedContentObject(contentObject, rcsMessageRequest.getContentType(), personalizedValues);
+                payloadRequestBuilder.personalizedContent(personalizedContent);
+                payloadRequestBuilder.personalizedValues(personalizedValues);
+            } else {
+                payloadRequestBuilder.content(contentObject);
+            }
+            PayloadRequest payloadRequest = payloadRequestBuilder
+                    .userId(rcsMessageRequest.getUserId())
+                    .messageRequestId(rcsMessageRequest.getMessageRequestId())
+                    .contentType(rcsMessageRequest.getContentType())
+                    .personalized(rcsMessageRequest.getIsPersonalized())
+                    .rcsExternalAgentId(rcsExternalAgent.getAgentId())
+                    .externalTemplateId(rcsExternalTemplate != null ? rcsExternalTemplate.getExternalTemplateId() : null)
+                    .serviceRouteDetails(serviceRouteDetails)
+                    .recipients(recipientValidationResult.validNumbers())
+                    .build();
+            messageSendingService.sendAndPersistSync(payloadRequest, getPayloadCreator(serviceRouteDetails.getServiceProvider()), getResponseHandler(serviceRouteDetails.getServiceProvider()));
+            validRecipients = recipientValidationResult.validNumbers().size();
+        }
+
+        if (!recipientValidationResult.invalidNumbers().isEmpty()) {
+            rcsMessageRecipientService.insertFailedRecipients(rcsMessageRequest.getUserId(), rcsMessageRequest.getMessageRequestId(), recipientValidationResult.invalidNumbers(), RcsMessageRecipientStatus.SENDING_FAILED);
+            invalidRecipients = recipientValidationResult.invalidNumbers().size();
+        }
+        rcsMessageRequestService.updateMessageRequestSummary(rcsMessageRequest, RcsMessageRequestStatus.PROCESSING, recipients.size(), validRecipients, invalidRecipients);
+    }
+
+    private void sendMessagesToGroup(RcsSubmissionEvent rcsSubmissionEvent, RcsMessageRequest rcsMessageRequest, RcsMessageTemplate rcsMessageTemplate, ServiceRouteDetails serviceRouteDetails, RcsExternalAgent rcsExternalAgent, RcsExternalTemplate rcsExternalTemplate) throws ProcessingException, IOException {
         try {
-            int sendBatchSize = 1;
-            CsvReaderService csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, sendBatchSize);
-            RcsMessageTemplate rcsMessageTemplate = rcsMessageTemplateRepository.findById(rcsMessageRequest.getMessageTemplateId())
-                    .orElseThrow(() -> new ProcessingException("Message template not found"));
-
-            ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
-                    .orElseThrow(() -> new ProcessingException("Service route details not found"));
-
-            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
-                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-
-            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
-            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
-
-            String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
-
-            List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
-
-            long processedRecord = rcsMessageRequest.getProcessedRecord();
-            long validRecipientsCount = rcsMessageRequest.getValidRecipients();
-            long invalidRecipientsCount = rcsMessageRequest.getInvalidRecipients();
-
-            long totalFileRecords = csvReaderService.getTotalRecords();
             long totalContacts = contactRepository.countByGroupId(rcsMessageRequest.getContactGroupId());
+            long currentOffset = rcsMessageRequest.getProcessedRecord();
+            if (rcsMessageRequest.getIsPersonalized()) {
+                CsvReaderService csvReaderService = new CsvReaderService(rcsMessageRequest.getFilePath(), true, 1);
+                long totalFileRecords = csvReaderService.getTotalRecords();
 
-            if (totalContacts != totalFileRecords) {
-                log.warn("Mismatch: contacts in group ({}) != records in file ({}) for messageRequestId {}", totalContacts, totalFileRecords, rcsMessageRequest.getMessageRequestId());
-                throw new ProcessingException("Number of contacts in group does not match number of records in file");
-            }
-
-            if (processedRecord >= totalFileRecords) {
-                throw new ProcessingException("All records already processed for messageRequestId");
-            }
-            boolean hasMore = true;
-            long currentOffset = processedRecord;
-            Map<String, String> additionalHeaders = payloadCreator.getHeaders();
-            while (hasMore) {
+                if (totalContacts != totalFileRecords) {
+                    log.warn("Mismatch: contacts in group ({}) != records in file ({}) for messageRequestId {}", totalContacts, totalFileRecords, rcsMessageRequest.getMessageRequestId());
+                    throw new ProcessingException("Number of contacts in group does not match number of records in file");
+                }
                 List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, DB_FETCH_SIZE);
-                if (recipients == null || recipients.isEmpty()) {
-                    break;
-                }
-                for (String recipient : recipients) {
-                    String validRecipient =  validateNumber(recipient);
-                    if (validRecipient != null) {
+                while (recipients != null && !recipients.isEmpty()) {
+                    for (String recipient : recipients) {
                         Map<String, String> nextRecordMap = csvReaderService.getNextRecordAsMap();
-                        Object templateContentObject = parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType());
-                        Object personalizedContentObject = formPersonalizedContentObject(templateContentObject, nextRecordMap);
-                        String personalizedContent = objectMapper.writeValueAsString(personalizedContentObject);
-                        log.debug("personalizedContentObject  {}, {}", personalizedContentObject, nextRecordMap);
-                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, personalizedContent, null);
-                        Map<String, Object> requestBody = payloadCreator.createPayload(personalizedContentObject, List.of(validRecipient));
-                        sendAndInsert(url, requestBody, additionalHeaders, List.of(rcsMessageRecipient), serviceProvider);
-                        validRecipientsCount++;
-                    } else {
-                        RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                        inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                        invalidRecipientsCount++;
+                        processMessages(rcsMessageRequest, parseContent(rcsMessageTemplate.getTemplateContent(), rcsMessageTemplate.getContentType()), nextRecordMap, List.of(recipient), serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
                     }
-                    processedRecord++;
-                    if (!inValidRcsMessageRecipients.isEmpty() && inValidRcsMessageRecipients.size() >= INSERT_BATCH_SIZE) {
-                        rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                        inValidRcsMessageRecipients.clear();
+                    recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, DB_FETCH_SIZE);
+                }
+            } else {
+                int requestBatchSize = serviceRouteDetails.getRequestBatchSize();
+                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, DB_FETCH_SIZE);
+                while (recipients != null && !recipients.isEmpty()) {
+                    int startIndex = 0;
+                    int total = recipients.size();
+                    while (startIndex < total) {
+                        int endIndex = Math.min(startIndex + requestBatchSize, total);
+                        List<String> recipientBatch = recipients.subList(startIndex, endIndex);
+                        processMessages(rcsMessageRequest, parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType()), null, recipientBatch, serviceRouteDetails, rcsExternalAgent, rcsExternalTemplate);
+                        startIndex = endIndex;
                     }
+                    currentOffset = rcsMessageRequest.getProcessedRecord();
+                    recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, DB_FETCH_SIZE);
                 }
-                if (recipients.size() < DB_FETCH_SIZE) {
-                    hasMore = false;
-                }
-                currentOffset = processedRecord;
+
             }
-            if (!inValidRcsMessageRecipients.isEmpty()) {
-                rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-            }
-            rcsMessageRequest.setProcessedRecord(processedRecord);
-            rcsMessageRequest.setValidRecipients(validRecipientsCount);
-            rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.COMPLETED);
-            rcsMessageRequest.setCompletedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequestRepository.save(rcsMessageRequest);
         } catch (ProcessingException e) {
             log.error("Processing exception occurred", e);
             rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
@@ -486,163 +272,6 @@ public class RcsSubmissionEventHandler {
             rcsMessageRequestRepository.save(rcsMessageRequest);
         }
 
-    }
-
-    private void sendBulkMessagesToGroup(RcsMessageRequest rcsMessageRequest) {
-        try {
-            int sendBatchSize = CONTACT_BATCH_SIZE_PER_REQUEST;
-            ServiceRouteDetails serviceRouteDetails = serviceRouteDetailsRepository.findServiceRouteDetailsByUserIdAndType(rcsMessageRequest.getUserId(), ServiceRouteType.RCS)
-                    .orElseThrow(() -> new ProcessingException("Service route details not found"));
-
-            RcsExternalAgent rcsExternalAgent = rcsExternalAgentRepository.findByAgentIdAndExternalAgentStatus(rcsMessageRequest.getRcsAgentId(), RcsExternalAgentStatus.ACTIVE)
-                    .orElseThrow(() -> new ProcessingException("RCS Agent not found/Inactive"));
-            ServiceProvider serviceProvider = ServiceProvider.valueOf(serviceRouteDetails.getServiceProvider());
-            PayloadCreator payloadCreator = getPayloadCreator(rcsMessageRequest, serviceRouteDetails, rcsExternalAgent);
-
-            String url = serviceRouteDetails.getBaseUrl() + serviceRouteDetails.getEndpoint();
-
-            long processedRecord = rcsMessageRequest.getProcessedRecord();
-            long validRecipientsCount = rcsMessageRequest.getValidRecipients();
-            long invalidRecipientsCount = rcsMessageRequest.getInvalidRecipients();
-
-            Object contentObject = parseContent(rcsMessageRequest.getContent(), rcsMessageRequest.getContentType());
-            List<RcsMessageRecipient> inValidRcsMessageRecipients = new ArrayList<>();
-            List<RcsMessageRecipient> validRcsMessageRecipients = new ArrayList<>();
-            List<String> validRecipients = new ArrayList<>();
-            Map<String, String> headers = payloadCreator.getHeaders();
-
-            long currentOffset = processedRecord;
-            while (true) {
-                List<String> recipients = contactRepository.findNumbersByGroupIdOrdered(rcsMessageRequest.getContactGroupId(), currentOffset, sendBatchSize);
-                if (recipients == null || recipients.isEmpty()) {
-                    break;
-                }
-                do {
-                    if (recipients.size() < sendBatchSize) {
-                        sendBatchSize = recipients.size();
-                    }
-                    List<String> recipientBatch = recipients.subList(0, sendBatchSize);
-                    recipients = recipients.subList(sendBatchSize, recipients.size());
-                    for (String recipient : recipientBatch) {
-                        String validRecipient =  validateNumber(recipient);
-                        if (validRecipient != null) {
-                            validRecipients.add(validRecipient);
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), validRecipient, RcsMessageRecipientStatus.PENDING, null, null);
-                            validRcsMessageRecipients.add(rcsMessageRecipient);
-                        } else {
-                            RcsMessageRecipient rcsMessageRecipient = populateRcsMessageRecipient(rcsMessageRequest.getUserId(),rcsMessageRequest.getMessageRequestId(), recipient, RcsMessageRecipientStatus.SENDING_FAILED, null, Constants.ERR_INVALID_NUMBER);
-                            inValidRcsMessageRecipients.add(rcsMessageRecipient);
-                        }
-                    }
-
-                    processedRecord += recipientBatch.size();
-                    validRecipientsCount += validRcsMessageRecipients.size();
-                    invalidRecipientsCount += inValidRcsMessageRecipients.size();
-
-                    if (!inValidRcsMessageRecipients.isEmpty()) {
-                        rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                        inValidRcsMessageRecipients.clear();
-                    }
-
-                    if (!validRecipients.isEmpty()) {
-                        Map<String, Object> payload = payloadCreator.createPayload(contentObject, validRecipients);
-                        sendAndInsert(url, payload, headers, new ArrayList<>(validRcsMessageRecipients), serviceProvider);
-                        validRcsMessageRecipients.clear();
-                        validRecipients.clear();
-                    }
-
-                    rcsMessageRequest.setProcessedRecord(processedRecord);
-                    rcsMessageRequest.setValidRecipients(validRecipientsCount);
-                    rcsMessageRequest.setInvalidRecipients(invalidRecipientsCount);
-                    rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                    rcsMessageRequestRepository.save(rcsMessageRequest);
-                } while (!recipients.isEmpty());
-                currentOffset = processedRecord;
-            }
-            if (!inValidRcsMessageRecipients.isEmpty()) {
-                rcsMessageRecipientRepository.saveAll(inValidRcsMessageRecipients);
-                inValidRcsMessageRecipients.clear();
-            }
-
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.COMPLETED);
-            rcsMessageRequest.setCompletedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequestRepository.save(rcsMessageRequest);
-        } catch (ProcessingException | JsonProcessingException e) {
-            log.error("Processing exception occurred", e);
-            rcsMessageRequest.setStatus(RcsMessageRequestStatus.FAILED);
-            rcsMessageRequest.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-            rcsMessageRequest.setComments(e.getMessage());
-            rcsMessageRequestRepository.save(rcsMessageRequest);
-        }
-    }
-
-    private static RcsMessageRecipient populateRcsMessageRecipient(BigInteger userId, String messageRequestId, String recipient, RcsMessageRecipientStatus status, String personalizedContent, String comment) {
-        RcsMessageRecipient rcsMessageRecipient = new RcsMessageRecipient();
-        rcsMessageRecipient.setMessageRequestId(messageRequestId);
-        rcsMessageRecipient.setRecipient(recipient);
-        rcsMessageRecipient.setStatus(status);
-        rcsMessageRecipient.setUserId(userId);
-        rcsMessageRecipient.setPersonalizedContent(personalizedContent);
-        if (comment != null) {
-            rcsMessageRecipient.setComments(comment);
-        }
-        return rcsMessageRecipient;
-    }
-    public String fillTemplateWithMap(String template, Map<String, String> values) {
-        if (template == null || values == null) return template;
-        String result = template;
-        log.info("Filling template: {} {}", template, values);
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            String placeholder = "{{" + entry.getKey().toLowerCase() + "}}";
-            result = result.replace(placeholder, entry.getValue() != null ? entry.getValue() : "");
-        }
-        return result;
-    }
-
-    private Object parseContent(Object content, RcsContentType contentType) throws JsonProcessingException {
-        String contentStr = (String) content;
-        if (contentType == RcsContentType.PLAIN_TEXT) {
-            return objectMapper.readValue(contentStr, RcsPlainText.class);
-        } else if (contentType == RcsContentType.RICH_CARD) {
-            return objectMapper.readValue(contentStr, SingleRichCard.class);
-        } else if (contentType == RcsContentType.CAROUSEL) {
-            return objectMapper.readValue(contentStr, MultipleRichCard.class);
-        }
-        return content;
-    }
-
-    private Object formPersonalizedContentObject(Object templateObject, Map<String, String> personalizedMap) throws JsonProcessingException {
-        Object personalizedContent = null;
-        if (templateObject instanceof RcsPlainText plainText) {
-            String filledText = fillTemplateWithMap(plainText.getText(), personalizedMap);
-            plainText.setText(filledText);
-            personalizedContent = plainText;
-        } else if (templateObject instanceof SingleRichCard richCard) {
-            CardContent content = richCard.getContent();
-            if (content != null) {
-                if (content.getCardTitle() != null) {
-                    content.setCardTitle(fillTemplateWithMap(content.getCardTitle(), personalizedMap));
-                }
-                if (content.getCardDescription() != null) {
-                    content.setCardDescription(fillTemplateWithMap(content.getCardDescription(), personalizedMap));
-                }
-            }
-            personalizedContent = richCard;
-        } else if (templateObject instanceof MultipleRichCard carousel) {
-            if (carousel.getContents() != null) {
-                for (CardContent content : carousel.getContents()) {
-                    if (content.getCardTitle() != null) {
-                        content.setCardTitle(fillTemplateWithMap(content.getCardTitle(), personalizedMap));
-                    }
-                    if (content.getCardDescription() != null) {
-                        content.setCardDescription(fillTemplateWithMap(content.getCardDescription(), personalizedMap));
-                    }
-                }
-            }
-            personalizedContent = carousel;
-        }
-        return personalizedContent;
     }
 
     private String validateNumber(String number) {
@@ -665,59 +294,88 @@ public class RcsSubmissionEventHandler {
                 return null;
             }
         }
-        // Not a valid Indian number format
         return null;
     }
 
-    private void sendAndInsert(String url, Map<String, Object> requestBody, Map<String, String> additionalHeaders, List<RcsMessageRecipient> rcsMessageRecipients, ServiceProvider serviceProvider) throws ProcessingException, JsonProcessingException {
-        ServiceProviderApiResponseHandler  responseHandler = getServiceProviderApiResponseHandler(serviceProvider);
-        webClient.post()
-                .uri(url)
-                .headers(httpHeaders -> {
-                    if (!additionalHeaders.isEmpty()) {
-                        additionalHeaders.forEach(httpHeaders::add);
-                    }
-                })
-                .bodyValue(requestBody)
-                .retrieve()
-                .bodyToMono(String.class)
-                .flatMap(responseStr -> {
-                    String referenceId = null;
-                    String request = null;
-                    try {
-                        log.debug("Received response: {}", responseStr);
-                        referenceId = responseHandler.handle(responseStr);
-                        request = objectMapper.writeValueAsString(requestBody);
-                    } catch (Exception e) {
-                        log.warn("Failed to parse response as JSON: {},{}", responseStr, e.getMessage());
-                    }
-                    for (RcsMessageRecipient rcsMessageRecipient : rcsMessageRecipients) {
-                        rcsMessageRecipient.setReferenceId(referenceId);
-                        rcsMessageRecipient.setResponse(responseStr);
-                        rcsMessageRecipient.setRequest(request);
-                        rcsMessageRecipient.setStatus(RcsMessageRecipientStatus.SENT);
-                        rcsMessageRecipient.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                    }
-                    rcsMessageRecipientRepository.saveAll(rcsMessageRecipients);
-                    return Mono.empty();
-                })
-                .onErrorResume(ex -> {
-                    log.error("API call failed for messageRequestId {}", rcsMessageRecipients.getFirst().getMessageRequestId(), ex);
-                    String request;
-                    try {
-                        request = objectMapper.writeValueAsString(requestBody);
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    }
-
-                    for (RcsMessageRecipient rcsMessageRecipient : rcsMessageRecipients) {
-                        rcsMessageRecipient.setStatus(RcsMessageRecipientStatus.SENDING_FAILED);
-                        rcsMessageRecipient.setResponse(ex.getMessage());
-                        rcsMessageRecipient.setRequest(request);
-                        rcsMessageRecipient.setUpdatedAt(OffsetDateTime.now(ZoneOffset.UTC));
-                    }
-                    rcsMessageRecipientRepository.saveAll(rcsMessageRecipients);
-                    return Mono.empty();
-                }).subscribe();
+    /**
+     * Segregate the supplied recipient numbers into valid (normalized) and invalid lists.
+     * Uses validateNumber(...) to normalize and validate each input.
+     * Returns a RecipientValidationResult containing both lists (never null).
+     */
+    private static record RecipientValidationResult(List<String> validNumbers, List<String> invalidNumbers) {
     }
+
+    private RecipientValidationResult validateRecipients(List<String> recipients) {
+        List<String> valid = new ArrayList<>();
+        List<String> invalid = new ArrayList<>();
+        if (recipients == null || recipients.isEmpty()) {
+            return new RecipientValidationResult(valid, invalid);
+        }
+        for (String recipient : recipients) {
+            String normalized = validateNumber(recipient);
+            if (normalized != null) {
+                valid.add(normalized);
+            } else {
+                invalid.add(recipient);
+            }
+        }
+        return new RecipientValidationResult(valid, invalid);
+    }
+
+    private Object parseContent(Object content, RcsContentType contentType) throws JsonProcessingException {
+        String contentStr = (String) content;
+        if (contentType == RcsContentType.PLAIN_TEXT) {
+            return objectMapper.readValue(contentStr, RcsPlainText.class);
+        } else if (contentType == RcsContentType.RICH_CARD) {
+            return objectMapper.readValue(contentStr, SingleRichCard.class);
+        } else if (contentType == RcsContentType.CAROUSEL) {
+            return objectMapper.readValue(contentStr, MultipleRichCard.class);
+        }
+        return content;
+    }
+
+    private Object formPersonalizedContentObject(Object personalizedParsedTemplate, RcsContentType contentType, Map<String, String> personalizedMap) throws JsonProcessingException {
+        Object personalizedContent = null;
+        if (personalizedParsedTemplate instanceof RcsPlainText plainText) {
+            String filledText = fillTemplateWithMap(plainText.getText(), personalizedMap);
+            plainText.setText(filledText);
+            personalizedContent = plainText;
+        } else if (personalizedParsedTemplate instanceof SingleRichCard richCard) {
+            CardContent content = richCard.getContent();
+            if (content != null) {
+                if (content.getCardTitle() != null) {
+                    content.setCardTitle(fillTemplateWithMap(content.getCardTitle(), personalizedMap));
+                }
+                if (content.getCardDescription() != null) {
+                    content.setCardDescription(fillTemplateWithMap(content.getCardDescription(), personalizedMap));
+                }
+            }
+            personalizedContent = richCard;
+        } else if (personalizedParsedTemplate instanceof MultipleRichCard carousel) {
+            if (carousel.getContents() != null) {
+                for (CardContent content : carousel.getContents()) {
+                    if (content.getCardTitle() != null) {
+                        content.setCardTitle(fillTemplateWithMap(content.getCardTitle(), personalizedMap));
+                    }
+                    if (content.getCardDescription() != null) {
+                        content.setCardDescription(fillTemplateWithMap(content.getCardDescription(), personalizedMap));
+                    }
+                }
+            }
+            personalizedContent = carousel;
+        }
+        return personalizedContent;
+    }
+
+    public String fillTemplateWithMap(String template, Map<String, String> values) {
+        if (template == null || values == null) return template;
+        String result = template;
+        log.info("Filling template: {} {}", template, values);
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            String placeholder = "{{" + entry.getKey().toLowerCase() + "}}";
+            result = result.replace(placeholder, entry.getValue() != null ? entry.getValue() : "");
+        }
+        return result;
+    }
+
 }

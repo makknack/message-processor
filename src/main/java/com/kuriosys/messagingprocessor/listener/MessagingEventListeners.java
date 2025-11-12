@@ -9,7 +9,6 @@ import com.kuriosys.messagingprocessor.enums.RcsWebhookEventSource;
 import com.kuriosys.messagingprocessor.event.RcsSubmissionEvent;
 import com.kuriosys.messagingprocessor.exception.SkipRecordException;
 import com.kuriosys.messagingprocessor.model.RcsEventLog;
-import com.kuriosys.messagingprocessor.model.jio.MessageRequestSendEvent;
 import com.kuriosys.messagingprocessor.repository.RcsEventLogRepository;
 import com.kuriosys.messagingprocessor.service.RcsSubmissionEventHandler;
 import com.kuriosys.messagingprocessor.service.RcsWebhookEventHandler;
@@ -106,27 +105,8 @@ public class MessagingEventListeners {
                 eventId = jsonNode.get("eventId").asText();
                 eventTypeStr = jsonNode.get("eventType").asText();
                 EventType eventType = EventType.fromValue(eventTypeStr);
-                RcsSubmissionEvent rcsSubmissionEvent;
-                switch (eventType) {
-                    case RCS_FILE_MSG_REQ:
-                        rcsSubmissionEvent = objectMapper.readValue(record.value(), RcsSubmissionEvent.class);
-                        rcsSubmissionEventHandler.sendToFileNumbers(rcsSubmissionEvent);
-                        break;
-                    case RCS_GROUP_MSG_REQ:
-                        rcsSubmissionEvent = objectMapper.readValue(record.value(), RcsSubmissionEvent.class);
-                        rcsSubmissionEventHandler.sendToGroupNumbers(rcsSubmissionEvent);
-                        break;
-                    case RCS_NUMBER_MSG_REQ:
-                        rcsSubmissionEvent = objectMapper.readValue(record.value(), RcsSubmissionEvent.class);
-                        rcsSubmissionEventHandler.sendToManualNumbers(rcsSubmissionEvent);
-                        break;
-                    case null:
-                        log.warn("Event type is null in the event: {}", record.value());
-                        break;
-                    default:
-                        log.warn("Unknown event type: {}", eventType);
-                        return;
-                }
+                RcsSubmissionEvent rcsSubmissionEvent = objectMapper.readValue(record.value(), RcsSubmissionEvent.class);
+                rcsSubmissionEventHandler.handle(rcsSubmissionEvent);
                 acknowledgment.acknowledge();
                 log.debug("RCS File Upload Event processed: {} {}", eventType,  record.offset());
                 }

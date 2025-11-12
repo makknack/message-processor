@@ -1,5 +1,7 @@
 package com.kuriosys.messagingprocessor.model;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kuriosys.messagingprocessor.enums.RcsContentType;
 import com.kuriosys.messagingprocessor.enums.RcsMessageTemplateStatus;
 import lombok.Getter;
@@ -7,6 +9,8 @@ import lombok.Setter;
 import lombok.ToString;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Type;
+
 import java.time.OffsetDateTime;
 
 @Entity
@@ -15,6 +19,7 @@ import java.time.OffsetDateTime;
 @Setter
 @ToString
 public class RcsMessageTemplate {
+
     @Id
     @Column(name = "message_template_id", length = 26)
     private String messageTemplateId;
@@ -42,7 +47,7 @@ public class RcsMessageTemplate {
     @Column(name = "has_variables", nullable = false)
     private Boolean hasVariables;
 
-    @Column(name = "template_content", columnDefinition = "json", nullable = false)
+    @Column(name = "template_content", columnDefinition = "jsonb", nullable = false)
     private Object templateContent;
 
     @Column(name = "template_variables", columnDefinition = "json")
